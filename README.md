@@ -1,13 +1,20 @@
 # simple_filtools
 
-Standalone, dependency-free RFI diagnostics for SIGPROC-format filterbank data.
+Standalone, dependency-free utilities for SIGPROC-format filterbank data.
 Designed around 2-bit, 2048-channel, ~50 us, ~40-min DSA-2000 search-mode
 files (~25 GB packed), but works on any SIGPROC `nbits in {1,2,4,8}` file
 with `nifs == 1`.
 
-The C tool (`rfidiag`) streams the file in one pass, writes a single
-self-describing binary diagnostics file (`*.diag`), and a companion Python
-script (`python/plot_diagnostics.py`) turns that into a set of PNG plots.
+Three C binaries:
+
+| binary     | purpose                                                       |
+| ---------- | ------------------------------------------------------------- |
+| `rfidiag`  | streaming RFI diagnostics, writes a `*.diag` binary           |
+| `chop_fil` | cut a `[start, start+dur]` slice into a new `.fil`            |
+| `header`   | print SIGPROC header fields (mirrors sigproc's `header` tool) |
+
+A companion Python script (`python/plot_diagnostics.py`) turns a `.diag`
+into a set of PNG plots.
 
 The SIGPROC header reader is ported from
 [`dsa110-sigproc`](../dsa110-sigproc) (`read_header.c`, `pack_unpack.c`,
@@ -19,7 +26,7 @@ The SIGPROC header reader is ported from
 ## Build
 
 ```bash
-make            # builds ./rfidiag
+make            # builds rfidiag, chop_fil, header
 make test       # builds tests, runs unpack unit test + numpy cross-check
 make clean
 ```
@@ -27,6 +34,8 @@ make clean
 Tests need Python with `numpy` (matplotlib is required only for plotting).
 
 ## Run
+
+### `rfidiag` — RFI diagnostics
 
 ```bash
 # 1) C streaming pass: produces obs.diag
@@ -48,6 +57,47 @@ python3 python/plot_diagnostics.py obs.diag --outdir obs_plots/
 
 `plot_diagnostics.py --help` for plot-side options (`--fdec`, `--tdec`,
 `--n-spectra`, `--spectra-sec`).
+
+### `chop_fil` — cut a time slice
+
+```bash
+./chop_fil obs.fil -s <start_sec> -d <dur_sec> [-o out.fil]
+```
+
+Writes a new SIGPROC filterbank file containing samples
+`[round(start_sec/tsamp), +round(dur_sec/tsamp))` from `obs.fil`. The
+header is copied verbatim from the input (preserving any non-standard
+tags) with a single edit: `tstart` is incremented by
+`start_samp * tsamp / 86400` days. Default output is `<input>.cut.fil`.
+
+If `dur_sec` would run past the end of the file, the cut is silently
+truncated and a warning is printed to stderr. If `start_sec` is past the
+end of the file, `chop_fil` exits with an error.
+
+### `header` — print header fields
+
+```bash
+./header obs.fil                     # full human-readable summary
+./header obs.fil -tstart -tsamp      # one value per line, for shell use
+```
+
+Standalone reimplementation of dsa110-sigproc's `header` tool on top of
+the simple_filtools header reader. Supported flags (`./header --help`):
+
+```
+-source_name -telescope -machine -datatype -data_type
+-frame -barycentric -pulsarcentric
+-headersize -datasize -nsamples -tobs
+-fch1 -foff -bandwidth -fmid -nchans -nbits -nifs -nbeam -ibeam
+-tstart -tsamp -mjd -utstart -date
+-src_raj -src_dej -ra_deg -dec_deg -az_start -za_start
+-refdm (alias -dm) -frequencies
+```
+
+Differences from sigproc's tool: WAPP/PSPM/BPP raw formats are not
+supported; `-frequencies` always prints `fch1 + i*foff` rather than
+reading a `FREQUENCY_START`/`FREQUENCY_END` channel table; `-obsdb`,
+`-scan_number`, and the `signed` 8-bit flag are not implemented.
 
 ## Diagnostics produced
 
@@ -136,7 +186,9 @@ simple_filtools/
 │   ├── filhdr.{h,c}           # ported SIGPROC header reader (no globals)
 │   ├── unpack.{h,c}           # n-bit unpack, fast 2-bit path
 │   ├── diag.{h,c}             # tagged-section binary output writer
-│   └── rfidiag.c              # streaming main
+│   ├── rfidiag.c              # streaming RFI diagnostics main
+│   ├── chop_fil.c             # cut a time slice into a new .fil
+│   └── header.c               # print SIGPROC header fields
 ├── python/
 │   ├── diagio.py              # .diag reader (numpy)
 │   ├── plot_diagnostics.py    # 6 PNGs from a .diag

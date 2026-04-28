@@ -9,19 +9,30 @@ CC      ?= cc
 CFLAGS  ?= -O3 -Wall -Wextra -std=c99
 LDLIBS  ?= -lm
 
-SRC     := src/filhdr.c src/unpack.c src/diag.c src/rfidiag.c
 HDRS    := src/filhdr.h src/unpack.h src/diag.h
-OBJ     := $(SRC:.c=.o)
-BIN     := rfidiag
+
+RFIDIAG_SRC   := src/filhdr.c src/unpack.c src/diag.c src/rfidiag.c
+CHOP_SRC      := src/filhdr.c src/chop_fil.c
+HEADER_SRC    := src/filhdr.c src/header.c
+
+OBJ     := $(sort $(RFIDIAG_SRC:.c=.o) $(CHOP_SRC:.c=.o) $(HEADER_SRC:.c=.o))
+
+BINS    := rfidiag chop_fil header
 
 PYTHON  ?= python3
 
 .PHONY: all clean test test-unpack test-numpy
 
-all: $(BIN)
+all: $(BINS)
 
-$(BIN): $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDLIBS)
+rfidiag: $(RFIDIAG_SRC:.c=.o)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+chop_fil: $(CHOP_SRC:.c=.o)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+header: $(HEADER_SRC:.c=.o)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 src/%.o: src/%.c $(HDRS)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
@@ -32,12 +43,12 @@ tests/test_unpack: tests/test_unpack.c src/unpack.c src/unpack.h
 test-unpack: tests/test_unpack
 	./tests/test_unpack
 
-test-numpy: $(BIN)
+test-numpy: rfidiag
 	$(PYTHON) tests/check_against_numpy.py
 
 test: test-unpack test-numpy
 	@echo "All tests passed."
 
 clean:
-	rm -f $(OBJ) $(BIN) tests/test_unpack
+	rm -f $(OBJ) $(BINS) tests/test_unpack
 	rm -rf tests/_tmp
