@@ -6,12 +6,17 @@
 #   make clean
 
 CC      ?= cc
-CFLAGS  ?= -O3 -Wall -Wextra -std=c99
+LDLIBS  ?= -lm
+CFLAGS  ?= -O3 -Wall -Wextra -std=c99 -D_POSIX_C_SOURCE=200809L -Isrc
+
 # POSIX feature flags: needed on Linux/glibc to expose clock_gettime,
 # fseeko/off_t, struct timespec, etc. when compiling with -std=c99.
-# Harmless on macOS.
-CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
-LDLIBS  ?= -lm
+# Harmless on macOS. We use `override ... +=` so these flags are always
+# appended -- even if CPPFLAGS is set in the environment or on the
+# command line. (`?=` would silently no-op against an exported empty
+# CPPFLAGS, which is a common gotcha.) Our .c files also set the same
+# macros via #define as a final safety net.
+override CPPFLAGS += -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
 
 HDRS    := src/filhdr.h src/unpack.h src/diag.h
 
