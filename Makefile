@@ -7,6 +7,10 @@
 
 CC      ?= cc
 CFLAGS  ?= -O3 -Wall -Wextra -std=c99
+# POSIX feature flags: needed on Linux/glibc to expose clock_gettime,
+# fseeko/off_t, struct timespec, etc. when compiling with -std=c99.
+# Harmless on macOS.
+CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
 LDLIBS  ?= -lm
 
 HDRS    := src/filhdr.h src/unpack.h src/diag.h
@@ -35,10 +39,10 @@ header: $(HEADER_SRC:.c=.o)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 src/%.o: src/%.c $(HDRS)
-	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc -c $< -o $@
 
 tests/test_unpack: tests/test_unpack.c src/unpack.c src/unpack.h
-	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_unpack.c src/unpack.c $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc -o $@ tests/test_unpack.c src/unpack.c $(LDLIBS)
 
 test-unpack: tests/test_unpack
 	./tests/test_unpack
