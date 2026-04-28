@@ -17,6 +17,15 @@
  * layouts (e.g. DSA-2000's 2-bit / 2048-channel files).
  */
 
+/* POSIX feature flags: needed on Linux/glibc to expose fseeko / off_t
+ * when compiling with -std=c99. Must come before any system header. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+
 #include "filhdr.h"
 
 #include <errno.h>

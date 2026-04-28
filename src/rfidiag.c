@@ -16,6 +16,16 @@
  * Total at default settings on 40-min/2-bit/2048ch input: ~250 MB.
  */
 
+/* POSIX feature flags: needed on Linux/glibc to expose clock_gettime,
+ * CLOCK_MONOTONIC, struct timespec, fseeko, off_t when compiling with
+ * -std=c99. Must be defined before any system header is included. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+
 #include "filhdr.h"
 #include "unpack.h"
 #include "diag.h"

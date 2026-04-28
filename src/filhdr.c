@@ -6,6 +6,15 @@
  * in a fil_header struct and never aborts the process on bad input.
  */
 
+/* POSIX feature flags: keeps stat() and friends visible under -std=c99
+ * on Linux/glibc. Must come before any system header. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+
 #include "filhdr.h"
 
 #include <stdarg.h>
