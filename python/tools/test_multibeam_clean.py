@@ -149,28 +149,31 @@ def main():
     print("[test] PASS (end-to-end 2-bit roundtrip)")
 
     # --- Direct kernel test (no quantization) ---
-    # Show the eigen-clean kernel exactly suppresses a planted rank-1 RFI
-    # signal across >= min_support beams when fed whitened floats directly.
+    # Show the eigen-clean kernel suppresses a planted rank-1 RFI signal
+    # across >= min_support beams when fed whitened floats directly.
+    # NB: clean_chunk now modifies its input in place.
     B = 24; nF = 16; nT = 200; Fw = 4; Tw = 20
-    nFt = nF // Fw; nTt = nT // Tw
     rng2 = np.random.default_rng(7)
-    x = rng2.standard_normal((B, nF, nT)).astype(np.float32)
+    x_orig = rng2.standard_normal((B, nF, nT)).astype(np.float32)
     rfi_mask_beams = np.array([1.0] * 20 + [0.0] * 4, dtype=np.float32)
     burst_t = np.arange(40, 60)
-    x[:, :, burst_t] += (3.0 * rfi_mask_beams)[:, None, None]
-    cp = MBC.CleanParams(Tw, Fw, min_support=15, safety=1.05, max_rank=3)
-    cleaned, diag = MBC.clean_chunk(x, cp)
+    x_orig[:, :, burst_t] += (3.0 * rfi_mask_beams)[:, None, None]
+    cp = MBC.CleanParams(tile_time_samp=Tw, tile_freq_chans=Fw,
+                          min_support=15, safety=1.05, max_rank=3,
+                          freq_batch_tiles=4)
+    x = x_orig.copy()                                    # clean in place
+    diag = MBC.clean_chunk(x, cp)
     print(f"[kernel] diag: tiles={diag.n_tiles} rfi_eigvals={diag.n_rfi_eigvals} "
           f"max_eig={diag.max_eigval:.2f} mp_edge={diag.mp_edge:.2f}")
-    rfi_resid = float(np.abs(cleaned[:20, :, burst_t]).mean())
-    nonrfi_resid = float(np.abs(cleaned[20:, :, burst_t] - x[20:, :, burst_t]).mean())
+    rfi_resid = float(np.abs(x[:20, :, burst_t]).mean())
+    nonrfi_resid = float(np.abs(x[20:, :, burst_t] - x_orig[20:, :, burst_t]).mean())
     print(f"[kernel] |cleaned| at burst on RFI beams       = {rfi_resid:.3f} "
-          f"(was {float(np.abs(x[:20, :, burst_t]).mean()):.3f}; expect ~thermal)")
+          f"(was {float(np.abs(x_orig[:20, :, burst_t]).mean()):.3f}; expect ~thermal)")
     print(f"[kernel] |cleaned - input| on non-RFI beams    = {nonrfi_resid:.3f} "
           f"(expect ~0)")
     assert rfi_resid < 1.5, f"kernel did not suppress planted RFI: {rfi_resid}"
-    # Small leakage onto non-RFI beams is expected: the leading eigenvector is
-    # estimated from finite samples and bleeds a little into orthogonal beams.
+    # Small leakage onto non-RFI beams is expected from finite-sample
+    # eigenvector estimation.
     assert nonrfi_resid < 0.1, f"kernel disturbed non-RFI beams too much: {nonrfi_resid}"
     print("[kernel] PASS")
     return 0
