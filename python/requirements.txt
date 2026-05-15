@@ -1,2 +1,7 @@
 numpy>=1.20
 matplotlib>=3.3
+# threadpoolctl is needed by multibeam_clean.py for the parallel clean_chunk
+# path (it caps BLAS to 1 thread per worker so the worker pool doesn't
+# oversubscribe MKL/OpenBLAS). It is typically already installed as a
+# transitive dependency of numpy/scipy/scikit-learn.
+threadpoolctl>=3.0
