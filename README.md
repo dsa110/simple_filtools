@@ -13,8 +13,13 @@ Three C binaries:
 | `chop_fil` | cut a `[start, start+dur]` slice into a new `.fil`            |
 | `header`   | print SIGPROC header fields (mirrors sigproc's `header` tool) |
 
-A companion Python script (`python/plot_diagnostics.py`) turns a `.diag`
-into a set of PNG plots.
+Two companion Python tools:
+
+| script                          | purpose                                                              |
+| ------------------------------- | -------------------------------------------------------------------- |
+| `python/plot_diagnostics.py`    | turn a `.diag` into a set of PNG plots                               |
+| `python/compare_beam_rfi.py`    | compare RFI signatures across multiple beams' `.diag` files          |
+| `python/multibeam_clean.py`     | clean cross-beam-correlated RFI from N filterbank files in parallel  |
 
 The SIGPROC header reader is ported from
 [`dsa110-sigproc`](../dsa110-sigproc) (`read_header.c`, `pack_unpack.c`,
@@ -98,6 +103,67 @@ Differences from sigproc's tool: WAPP/PSPM/BPP raw formats are not
 supported; `-frequencies` always prints `fch1 + i*foff` rather than
 reading a `FREQUENCY_START`/`FREQUENCY_END` channel table; `-obsdb`,
 `-scan_number`, and the `signed` 8-bit flag are not implemented.
+
+### `multibeam_clean.py` — remove RFI correlated across beam groups
+
+```bash
+python3 python/multibeam_clean.py \
+    beam00.fil beam01.fil ... beam71.fil \
+    --outdir cleaned/ \
+    --cores 20 \
+    --min-support 20 \
+    --chunk-sec 1.0 \
+    --tile-time-ms 100 \
+    --tile-freq-chans 4 \
+    --diag run.jsonl
+```
+
+Streams an arbitrary set of SIGPROC filterbank files (one per beam,
+any duration), reads all data-layout parameters (`nchans`, `nbits`,
+`fch1`, `foff`, `tsamp`, `tstart`, ...) from the headers, and writes
+one cleaned `.fil` per input into `--outdir`. Within each time chunk:
+
+1. Per-(beam, channel) whitening using a robust running scale (MAD,
+   EMA-smoothed across chunks with timescale `--whitening-tau-sec`).
+2. For each `(tile_time_ms, tile_freq_chans)` tile, form the `BxB`
+   cross-beam covariance and diagonalize it.
+3. Treat eigenpair `(lambda_k, u_k)` as RFI iff
+   * `lambda_k > MP_edge(B, N) * --safety`  (Marchenko-Pastur null),
+   * `participation_ratio(u_k) >= --min-support`  (>= N beams), and
+   * fewer than `--max-rank` components have already been removed.
+4. Subtract that subspace from the data and de-whiten.
+5. Re-quantize back to the input `nbits` and append to each output.
+
+Pass `--dry-run` to validate headers and print the processing plan
+without doing any work. Pass `--diag run.jsonl` for per-chunk
+JSON-lines diagnostics (`max_eigval`, `n_tiles_with_rfi`, ...).
+
+All knobs (with sensible defaults; see `--help`):
+
+| flag                     | meaning                                                   |
+| ------------------------ | --------------------------------------------------------- |
+| `--cores N`              | BLAS + parallel-IO threads (sets `OMP_NUM_THREADS` etc.)  |
+| `--chunk-sec`            | streaming chunk length                                    |
+| `--whitening-tau-sec`    | EMA timescale for running mean / scale                    |
+| `--tile-time-ms`         | time tile size for eigen-clean                            |
+| `--tile-freq-chans`      | freq tile size in channels                                |
+| `--min-support`          | participation-ratio threshold ("only flag RFI that hits >= N beams") |
+| `--safety`               | multiplicative safety on MP edge                          |
+| `--max-rank`             | cap on # eigenvectors subtracted per tile                 |
+| `--out-nbits`            | output bit depth (default: input)                         |
+| `--tstart-tol-sec`       | tolerance on tstart alignment across beams                |
+| `--diag`                 | per-chunk JSON-lines log                                  |
+| `--dry-run`              | parse + validate + print plan, no IO                      |
+
+Smoke test:
+
+```bash
+python3 python/tools/test_multibeam_clean.py
+```
+
+Plants a common-mode burst on 20 of 24 synthetic beams and verifies
+both the end-to-end 2-bit roundtrip and the eigen-clean kernel
+suppress the planted signal while leaving uninvolved beams untouched.
 
 ## Diagnostics produced
 
@@ -192,9 +258,12 @@ simple_filtools/
 ├── python/
 │   ├── diagio.py              # .diag reader (numpy)
 │   ├── plot_diagnostics.py    # 6 PNGs from a .diag
+│   ├── compare_beam_rfi.py    # multi-beam .diag comparison + spatial-filter feasibility
+│   ├── multibeam_clean.py     # cross-beam-correlated RFI cleaner (eigen subtraction)
 │   ├── requirements.txt
 │   └── tools/
-│       └── make_test_fil.py   # synthetic SIGPROC fil generator
+│       ├── make_test_fil.py            # synthetic SIGPROC fil generator
+│       └── test_multibeam_clean.py     # synthetic smoke test for multibeam_clean.py
 └── tests/
     ├── test_unpack.c
     └── check_against_numpy.py
