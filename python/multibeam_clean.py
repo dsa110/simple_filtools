@@ -705,6 +705,7 @@ class PipelineParams:
     whitening_tau_sec: float
     tile_time_ms: float
     tile_freq_chans: int
+    tile_freq_chans_list: Optional[List[int]]
     min_support: float
     safety: float
     max_rank: int
@@ -716,6 +717,31 @@ class PipelineParams:
     freq_batch_tiles: int
     robust_stats: str          # 'trimmed' (default) or 'mad'
     prefilter: bool = True     # cheap trace-based skip on RFI-free tiles
+
+
+def _resolve_tile_freq_scales(params: PipelineParams) -> List[int]:
+    """
+    Resolve one or many frequency tile widths for multi-scale cleaning.
+    Returns unique positive widths, ordered coarse->fine (descending), so
+    broad structures are projected out before narrow residuals.
+    """
+    vals = params.tile_freq_chans_list if params.tile_freq_chans_list else [params.tile_freq_chans]
+    uniq = sorted({max(1, int(v)) for v in vals}, reverse=True)
+    return uniq if uniq else [max(1, int(params.tile_freq_chans))]
+
+
+def _accum_diag(dst: CleanDiag, src: CleanDiag) -> None:
+    dst.n_tiles += src.n_tiles
+    dst.n_rfi_eigvals += src.n_rfi_eigvals
+    dst.n_tiles_with_rfi += src.n_tiles_with_rfi
+    dst.n_tiles_skipped += src.n_tiles_skipped
+    dst.max_eigval = max(dst.max_eigval, src.max_eigval)
+    dst.mp_edge = src.mp_edge
+    dst.safety_threshold = src.safety_threshold
+    dst.t_cov += src.t_cov
+    dst.t_eigh += src.t_eigh
+    dst.t_project += src.t_project
+    dst.t_reshape += src.t_reshape
 
 
 # ----- threading / environment introspection -----
@@ -804,15 +830,7 @@ def process(beams: List[BeamFile], params: PipelineParams,
     alpha = float(params.chunk_sec) / float(params.whitening_tau_sec)
     alpha = max(min(alpha, 1.0), 1e-3)
 
-    clean_params = CleanParams(
-        tile_time_samp = tile_time_samps,
-        tile_freq_chans = max(1, params.tile_freq_chans),
-        min_support = params.min_support,
-        safety = params.safety,
-        max_rank = params.max_rank,
-        freq_batch_tiles = params.freq_batch_tiles,
-        prefilter = params.prefilter,
-    )
+    tile_freq_scales = _resolve_tile_freq_scales(params)
 
     if params.robust_stats == "mad":
         stats_fn = _beam_stats_mad
@@ -833,9 +851,8 @@ def process(beams: List[BeamFile], params: PipelineParams,
               f"({chunk_samps*tsamp:.4f} s);  {n_chunks} chunks total;  "
               f"chunk buffer = {chunk_gb:.2f} GB float32")
         print(f"[multibeam_clean] tile_time = {tile_time_samps} samples "
-              f"({tile_time_samps*tsamp*1e3:.3f} ms);  tile_freq = "
-              f"{clean_params.tile_freq_chans} chans;  freq_batch_tiles = "
-              f"{params.freq_batch_tiles}")
+              f"({tile_time_samps*tsamp*1e3:.3f} ms);  tile_freq scales = "
+              f"{tile_freq_scales};  freq_batch_tiles = {params.freq_batch_tiles}")
         print(f"[multibeam_clean] whitening tau = {params.whitening_tau_sec:.3f} s "
               f"(alpha = {alpha:.4f});  robust_stats = {params.robust_stats}")
         print(f"[multibeam_clean] min_support = {params.min_support}  "
@@ -912,10 +929,23 @@ def process(beams: List[BeamFile], params: PipelineParams,
             _parallel_whiten(chunk, state_mean, state_sigma, io_pool, params.cores)
             t_acc["whiten"] += time.perf_counter() - ts
 
-            # --- 5. Eigen-clean in place (parallel freq batches).
+            # --- 5. Eigen-clean in place (parallel freq batches), optionally
+            # multi-scale in frequency in a single pass.
             ts = time.perf_counter()
-            diag = clean_chunk(chunk, clean_params,
-                               pool=io_pool, n_workers=params.cores)
+            diag = CleanDiag()
+            for fw in tile_freq_scales:
+                clean_params = CleanParams(
+                    tile_time_samp=tile_time_samps,
+                    tile_freq_chans=fw,
+                    min_support=params.min_support,
+                    safety=params.safety,
+                    max_rank=params.max_rank,
+                    freq_batch_tiles=params.freq_batch_tiles,
+                    prefilter=params.prefilter,
+                )
+                d = clean_chunk(chunk, clean_params,
+                                pool=io_pool, n_workers=params.cores)
+                _accum_diag(diag, d)
             t_acc["clean"]   += time.perf_counter() - ts
             t_acc["cov"]     += diag.t_cov
             t_acc["eigh"]    += diag.t_eigh
@@ -1050,15 +1080,7 @@ def _run_benchmark(beams: List[BeamFile], params: PipelineParams,
     state_mean  = np.zeros((B, nchans), dtype=np.float32)
     state_sigma = np.ones ((B, nchans), dtype=np.float32)
 
-    clean_params = CleanParams(
-        tile_time_samp = tile_time_samps,
-        tile_freq_chans = max(1, params.tile_freq_chans),
-        min_support = params.min_support,
-        safety = params.safety,
-        max_rank = params.max_rank,
-        freq_batch_tiles = params.freq_batch_tiles,
-        prefilter = params.prefilter,
-    )
+    tile_freq_scales = _resolve_tile_freq_scales(params)
     if params.robust_stats == "mad":
         stats_fn = _beam_stats_mad
     elif params.robust_stats == "trimmed":
@@ -1106,8 +1128,20 @@ def _run_benchmark(beams: List[BeamFile], params: PipelineParams,
         t_acc["whiten"] += time.perf_counter() - ts
 
         ts = time.perf_counter()
-        diag = clean_chunk(chunk, clean_params,
-                           pool=io_pool, n_workers=params.cores)
+        diag = CleanDiag()
+        for fw in tile_freq_scales:
+            clean_params = CleanParams(
+                tile_time_samp=tile_time_samps,
+                tile_freq_chans=fw,
+                min_support=params.min_support,
+                safety=params.safety,
+                max_rank=params.max_rank,
+                freq_batch_tiles=params.freq_batch_tiles,
+                prefilter=params.prefilter,
+            )
+            d = clean_chunk(chunk, clean_params,
+                            pool=io_pool, n_workers=params.cores)
+            _accum_diag(diag, d)
         t_acc["clean"]   += time.perf_counter() - ts
         t_acc["cov"]     += diag.t_cov
         t_acc["eigh"]    += diag.t_eigh
@@ -1168,6 +1202,10 @@ def main(argv=None) -> int:
                    help="time tile size in ms for eigen-clean (default: 100)")
     p.add_argument("--tile-freq-chans", type=int, default=4,
                    help="freq tile size in channels (default: 4)")
+    p.add_argument("--tile-freq-chans-list", default="",
+                   help="comma/space-separated multi-scale freq tile widths, "
+                        "e.g. '32,16,8,4'. If set, runs all scales in one pass "
+                        "(coarse->fine) and ignores --tile-freq-chans.")
     p.add_argument("--freq-batch-tiles", type=int, default=8,
                    help="number of freq tiles batched per einsum (default: 8); "
                         "increase for fewer BLAS calls at the cost of more "
@@ -1223,11 +1261,24 @@ def main(argv=None) -> int:
     tsamp  = float(beams[0].header.get("tsamp"))
     out_nbits = args.out_nbits if args.out_nbits is not None else nbits
 
+    tile_list: Optional[List[int]] = None
+    if args.tile_freq_chans_list.strip():
+        toks = args.tile_freq_chans_list.replace(",", " ").split()
+        try:
+            tile_list = [int(t) for t in toks]
+        except ValueError:
+            print("multibeam_clean: --tile-freq-chans-list must contain integers", file=sys.stderr)
+            return 2
+        if any(t <= 0 for t in tile_list):
+            print("multibeam_clean: --tile-freq-chans-list values must be > 0", file=sys.stderr)
+            return 2
+
     params = PipelineParams(
         chunk_sec = args.chunk_sec,
         whitening_tau_sec = args.whitening_tau_sec,
         tile_time_ms = args.tile_time_ms,
         tile_freq_chans = args.tile_freq_chans,
+        tile_freq_chans_list = tile_list,
         min_support = args.min_support,
         safety = args.safety,
         max_rank = args.max_rank,
@@ -1261,6 +1312,10 @@ def main(argv=None) -> int:
         print(f"[dry-run] chunk_sec           : {args.chunk_sec}")
         print(f"[dry-run] chunk buffer        : {chunk_gb:.2f} GB float32")
         print(f"[dry-run] outdir              : {args.outdir}")
+        if tile_list:
+            print(f"[dry-run] tile_freq_scales    : {sorted(set(tile_list), reverse=True)}")
+        else:
+            print(f"[dry-run] tile_freq_chans     : {args.tile_freq_chans}")
         print(f"[dry-run] cores               : {args.cores}")
         for b in beams: b.fp_in.close()
         return 0
